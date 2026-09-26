@@ -41,18 +41,22 @@ def content_filter(response: str) -> dict:
 
     # PII patterns to check
     PII_PATTERNS = {
-        # TODO: Add regex patterns for:
-        # - VN phone number: r"0\d{9,10}"
-        # - Email: r"[\w.-]+@[\w.-]+\.[a-zA-Z]{2,}"
-        # - National ID (CMND/CCCD): r"\b\d{9}\b|\b\d{12}\b"
-        # - API key pattern: r"sk-[a-zA-Z0-9-]+"
-        # - Password pattern: r"password\s*[:=]\s*\S+"
+        # SĐT Việt Nam: 10–11 chữ số, bắt đầu 0, có thể có dấu cách/gạch giữa các nhóm
+        "VN phone number": r"(?<!\d)0\d[\s.-]?\d{3,4}[\s.-]?\d{3,4}(?!\d)",
+        # Email
+        "Email": r"[\w.+-]+@[\w-]+\.[a-zA-Z]{2,}(?:\.[a-zA-Z]{2,})?",
+        # CMND 9 chữ số hoặc CCCD 12 chữ số (word boundary để tránh số trong câu)
+        "National ID (CMND/CCCD)": r"\b\d{9}\b|\b\d{12}\b",
+        # API key kiểu sk-… (OpenAI / internal)
+        "API key": r"sk-[A-Za-z0-9_-]{8,}",
+        # Password/secret xuất hiện trong cặp key=value hoặc key: value
+        "Password/secret": r"(?:password|passwd|secret|token|api[_-]?key)\s*[:=]\s*\S+",
     }
 
     for name, pattern in PII_PATTERNS.items():
-        matches = re.findall(pattern, response, re.IGNORECASE)
+        matches = re.findall(pattern, redacted, re.IGNORECASE)
         if matches:
-            issues.append(f"{name}: {len(matches)} found")
+            issues.append(f"{name}: {len(matches)} instance(s) found")
             redacted = re.sub(pattern, "[REDACTED]", redacted, flags=re.IGNORECASE)
 
     return {
@@ -172,16 +176,27 @@ class OutputGuardrailPlugin(base_plugin.BasePlugin):
         if not response_text:
             return llm_response
 
-        # TODO: Implement logic:
-        # 1. Call content_filter(response_text)
-        #    - If issues found: replace llm_response.content with redacted version
-        #    - Increment self.redacted_count
-        # 2. If use_llm_judge: call llm_safety_check(response_text)
-        #    - If unsafe: replace llm_response.content with a safe message
-        #    - Increment self.blocked_count
-        # 3. Return llm_response (possibly modified)
+        filter_result = content_filter(response_text)
+        if not filter_result["safe"]:
+            self.redacted_count += 1
+            llm_response.content = types.Content(
+                role="model",
+                parts=[types.Part.from_text(text=filter_result["redacted"])],
+            )
+            response_text = filter_result["redacted"]
 
-        return llm_response  # TODO: modify if needed
+        if self.use_llm_judge:
+            judge_result = await llm_safety_check(response_text)
+            if not judge_result["safe"]:
+                self.blocked_count += 1
+                llm_response.content = types.Content(
+                    role="model",
+                    parts=[types.Part.from_text(
+                        text="Xin lỗi, tôi không thể cung cấp thông tin đó. Vui lòng liên hệ hỗ trợ VinBank."
+                    )],
+                )
+
+        return llm_response
 
 
 # ============================================================
